@@ -1,0 +1,114 @@
+name: "MILLENNIUMS.AI Scan"
+description: "Trigger a MILLENNIUMS.AI security scan of a registered asset and gate the build on findings."
+author: "MILLENNIUMS.AI"
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  api-key:
+    description: "Per-asset trigger key (store as a repo secret; get it from the asset's Continuous view)."
+    required: true
+  asset-id:
+    description: "The registered asset id to scan."
+    required: true
+  api-url:
+    description: "MILLENNIUMS.AI API base URL."
+    required: false
+    default: "https://scan.millenniums.ai"
+  fail-on:
+    description: "Fail the build when a finding at or above this severity is found: critical | high | medium | low | never. 'never' = notify-only."
+    required: false
+    default: "high"
+  timeout-seconds:
+    description: "Max seconds to wait for the scan to finish."
+    required: false
+    default: "1800"
+  poll-seconds:
+    description: "Seconds between status polls."
+    required: false
+    default: "20"
+
+outputs:
+  run-id:
+    description: "The scan run id."
+    value: ${{ steps.scan.outputs.run_id }}
+  status:
+    description: "Final scan status."
+    value: ${{ steps.scan.outputs.status }}
+  findings:
+    description: "Confirmed pentest findings count."
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+        ASSET_ID: ${{ inputs.asset-id }}
+        API_URL: ${{ inputs.api-url }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        TIMEOUT: ${{ inputs.timeout-seconds }}
+        POLL: ${{ inputs.poll-seconds }}
+      run: |
+        set -euo pipefail
+        base="${API_URL%/}"
+
+        echo "▸ Triggering scan of asset $ASSET_ID"
+        resp="$(curl -sS -X POST "$base/api/assets/$ASSET_ID/trigger" -H "X-Scan-Key: $API_KEY")"
+        run_id="$(echo "$resp" | jq -r '.run_id // empty')"
+        if [ -z "$run_id" ]; then
+          echo "::error::Trigger failed: $resp"
+          exit 1
+        fi
+        echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+        echo "▸ Scan started: $run_id"
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        status="running"; done="false"; body="{}"
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+          sleep "$POLL"
+          body="$(curl -sS "$base/api/assets/$ASSET_ID/runs/$run_id" -H "X-Scan-Key: $API_KEY")"
+          done="$(echo "$body" | jq -r '.done // false')"
+          status="$(echo "$body" | jq -r '.status // "running"')"
+          echo "  … status=$status"
+          [ "$done" = "true" ] && break
+        done
+
+        crit="$(echo "$body" | jq -r '.severity.critical // 0')"
+        high="$(echo "$body" | jq -r '.severity.high // 0')"
+        med="$(echo "$body"  | jq -r '.severity.medium // 0')"
+        low="$(echo "$body"  | jq -r '.severity.low // 0')"
+        findings="$(echo "$body" | jq -r '.findings_count // 0')"
+        top="$(echo "$body" | jq -r '.max_severity // "none"')"
+        echo "status=$status"     >> "$GITHUB_OUTPUT"
+        echo "findings=$findings" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "## MILLENNIUMS.AI scan — \`$run_id\`"
+          echo "- Status: **$status**"
+          echo "- Findings: **$findings** (highest: **$top**)"
+          echo "- Critical $crit · High $high · Medium $med · Low $low"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$done" != "true" ]; then
+          echo "::error::Scan did not finish within ${TIMEOUT}s (status=$status)"
+          exit 1
+        fi
+
+        # Gate: fail if any finding at or above the fail-on threshold exists. 'never' = notify-only.
+        case "$FAIL_ON" in
+          never)    bad=0 ;;
+          critical) bad=$crit ;;
+          high)     bad=$(( crit + high )) ;;
+          medium)   bad=$(( crit + high + med )) ;;
+          low)      bad=$(( crit + high + med + low )) ;;
+          *) echo "::error::invalid fail-on '$FAIL_ON'"; exit 1 ;;
+        esac
+        if [ "$bad" -gt 0 ]; then
+          echo "::error::Gate failed — $bad finding(s) at or above '$FAIL_ON' (highest: $top)"
+          exit 1
+        fi
+        echo "✓ Gate passed (fail-on=$FAIL_ON)"
