@@ -1,9 +1,9 @@
-name: "MILLENNIUMS.AI Scan"
-description: "Trigger a MILLENNIUMS.AI security scan of a registered asset and gate the build on findings."
-author: "MILLENNIUMS.AI"
+name: "Redthread Scan"
+description: "Trigger a Redthread security scan of a registered asset and gate the build on findings."
+author: "Redthread Security"
 branding:
   icon: "shield"
-  color: "purple"
+  color: "red"
 
 inputs:
   api-key:
@@ -13,9 +13,9 @@ inputs:
     description: "The registered asset id to scan."
     required: true
   api-url:
-    description: "MILLENNIUMS.AI API base URL."
+    description: "Redthread API base URL."
     required: false
-    default: "https://scan.millenniums.ai"
+    default: "https://app.redthreadsec.com"
   fail-on:
     description: "Fail the build when a finding at or above this severity is found: critical | high | medium | low | never. 'never' = notify-only."
     required: false
@@ -87,7 +87,7 @@ runs:
         echo "findings=$findings" >> "$GITHUB_OUTPUT"
 
         {
-          echo "## MILLENNIUMS.AI scan — \`$run_id\`"
+          echo "## Redthread scan — \`$run_id\`"
           echo "- Status: **$status**"
           echo "- Findings: **$findings** (highest: **$top**)"
           echo "- Critical $crit · High $high · Medium $med · Low $low"
